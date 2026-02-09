@@ -1,10 +1,11 @@
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Set
 import os
+import re
 from document_processor import DocumentProcessor
 from vector_store import VectorStore
 from ai_generator import AIGenerator
 from session_manager import SessionManager
-from search_tools import ToolManager, CourseSearchTool
+from search_tools import ToolManager, CourseSearchTool, CourseOutlineTool
 from models import Course, Lesson, CourseChunk
 
 class RAGSystem:
@@ -16,13 +17,15 @@ class RAGSystem:
         # Initialize core components
         self.document_processor = DocumentProcessor(config.CHUNK_SIZE, config.CHUNK_OVERLAP)
         self.vector_store = VectorStore(config.CHROMA_PATH, config.EMBEDDING_MODEL, config.MAX_RESULTS)
-        self.ai_generator = AIGenerator(config.ANTHROPIC_API_KEY, config.ANTHROPIC_MODEL)
+        self.ai_generator = AIGenerator(config.ANTHROPIC_API_KEY, config.ANTHROPIC_MODEL, config.ANTHROPIC_BASE_URL)
         self.session_manager = SessionManager(config.MAX_HISTORY)
         
         # Initialize search tools
         self.tool_manager = ToolManager()
         self.search_tool = CourseSearchTool(self.vector_store)
+        self.outline_tool = CourseOutlineTool(self.vector_store)
         self.tool_manager.register_tool(self.search_tool)
+        self.tool_manager.register_tool(self.outline_tool)
     
     def add_course_document(self, file_path: str) -> Tuple[Course, int]:
         """
@@ -129,15 +132,65 @@ class RAGSystem:
         # Get sources from the search tool
         sources = self.tool_manager.get_last_sources()
 
+        # Augment sources with any lessons Claude referenced but weren't in search results
+        sources = self._augment_sources(response, sources)
+
         # Reset sources after retrieving them
         self.tool_manager.reset_sources()
-        
+
         # Update conversation history
         if session_id:
             self.session_manager.add_exchange(session_id, query, response)
-        
+
         # Return response with sources from tool searches
         return response, sources
+
+    def _augment_sources(self, response: str, existing_sources: List[str]) -> List[str]:
+        """Add source chips for lessons Claude mentions but that weren't in search results."""
+        # Extract lesson numbers already covered by existing sources
+        existing_lessons: Set[Tuple[str, int]] = set()
+        for source in existing_sources:
+            # Parse "Lesson N" from chip text (may be inside <a> tag)
+            m = re.search(r'Lesson (\d+)', source)
+            if m:
+                existing_lessons.add(int(m.group(1)))
+
+        # Find lesson numbers mentioned in Claude's response
+        mentioned = set()
+        for m in re.finditer(r'[Ll]esson\s+(\d+)', response):
+            mentioned.add(int(m.group(1)))
+
+        missing = mentioned - existing_lessons
+        if not missing:
+            return existing_sources
+
+        # Determine course title from existing sources (look at title attributes)
+        course_title = None
+        for source in existing_sources:
+            title_match = re.search(r'title="([^"]+?)(?:\s*-\s*Lesson)', source)
+            if title_match:
+                course_title = title_match.group(1)
+                break
+
+        if not course_title:
+            return existing_sources
+
+        # Look up missing lessons and add source chips
+        augmented = list(existing_sources)
+        for lesson_num in sorted(missing):
+            info = self.vector_store.get_lesson_info(course_title, lesson_num)
+            if not info:
+                continue
+            title = info.get('lesson_title', '')
+            link = info.get('lesson_link')
+            chip_label = f"Lesson {lesson_num}: {title}" if title else f"Lesson {lesson_num}"
+            if link:
+                chip = f'<a href="{link}" target="_blank" title="{course_title} - Lesson {lesson_num}">{chip_label}</a>'
+            else:
+                chip = chip_label
+            augmented.append(chip)
+
+        return augmented
     
     def get_course_analytics(self) -> Dict:
         """Get analytics about the course catalog"""

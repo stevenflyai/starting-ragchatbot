@@ -100,10 +100,24 @@ class CourseSearchTool(Tool):
                 header += f" - Lesson {lesson_num}"
             header += "]"
             
-            # Track source for the UI
-            source = course_title
+            # Track source for the UI with clickable link
+            chip_label = course_title
+            link = None
+
             if lesson_num is not None:
-                source += f" - Lesson {lesson_num}"
+                lesson_info = self.store.get_lesson_info(course_title, lesson_num)
+                if lesson_info:
+                    title = lesson_info.get('lesson_title', '')
+                    chip_label = f"Lesson {lesson_num}: {title}" if title else f"Lesson {lesson_num}"
+                    link = lesson_info.get('lesson_link')
+
+            if not link:
+                link = self.store.get_course_link(course_title)
+
+            if link:
+                source = f'<a href="{link}" target="_blank" title="{course_title} - Lesson {lesson_num}">{chip_label}</a>'
+            else:
+                source = chip_label
             sources.append(source)
             
             formatted.append(f"{header}\n{doc}")
@@ -112,6 +126,58 @@ class CourseSearchTool(Tool):
         self.last_sources = sources
         
         return "\n\n".join(formatted)
+
+class CourseOutlineTool(Tool):
+    """Tool for retrieving course outline: title, link, and lesson list"""
+
+    def __init__(self, vector_store: VectorStore):
+        self.store = vector_store
+        self.last_sources = []
+
+    def get_tool_definition(self) -> Dict[str, Any]:
+        return {
+            "name": "get_course_outline",
+            "description": "Get the full outline of a course including its title, course link, and list of lessons with their numbers and titles. Use this for questions about course structure, syllabus, or what topics a course covers.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "course_name": {
+                        "type": "string",
+                        "description": "Course title or partial name (e.g. 'MCP', 'Computer Use')"
+                    }
+                },
+                "required": ["course_name"]
+            }
+        }
+
+    def execute(self, course_name: str) -> str:
+        metadata = self.store.get_course_metadata(course_name)
+        if not metadata:
+            return f"No course found matching '{course_name}'."
+
+        title = metadata.get('title', 'Unknown')
+        course_link = metadata.get('course_link', '')
+        lessons = metadata.get('lessons', [])
+
+        # Track source for the UI
+        if course_link:
+            self.last_sources = [f'<a href="{course_link}" target="_blank" title="{title}">{title}</a>']
+        else:
+            self.last_sources = [title]
+
+        # Format output for the AI
+        lines = [f"Course: {title}"]
+        if course_link:
+            lines.append(f"Course Link: {course_link}")
+        lines.append(f"Total Lessons: {len(lessons)}")
+        lines.append("")
+        for lesson in sorted(lessons, key=lambda l: l.get('lesson_number', 0)):
+            num = lesson.get('lesson_number', '?')
+            ltitle = lesson.get('lesson_title', 'Untitled')
+            lines.append(f"Lesson {num}: {ltitle}")
+
+        return "\n".join(lines)
+
 
 class ToolManager:
     """Manages available tools for the AI"""

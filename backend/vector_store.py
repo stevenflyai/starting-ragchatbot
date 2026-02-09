@@ -233,6 +233,25 @@ class VectorStore:
             print(f"Error getting courses metadata: {e}")
             return []
 
+    def get_course_metadata(self, course_name: str) -> Optional[Dict[str, Any]]:
+        """Resolve a fuzzy course name and return full metadata including lessons"""
+        import json
+        course_title = self._resolve_course_name(course_name)
+        if not course_title:
+            return None
+        try:
+            results = self.course_catalog.get(ids=[course_title])
+            if results and 'metadatas' in results and results['metadatas']:
+                metadata = results['metadatas'][0].copy()
+                if 'lessons_json' in metadata:
+                    metadata['lessons'] = json.loads(metadata['lessons_json'])
+                    del metadata['lessons_json']
+                return metadata
+            return None
+        except Exception as e:
+            print(f"Error getting course metadata: {e}")
+            return None
+
     def get_course_link(self, course_title: str) -> Optional[str]:
         """Get course link for a given course title"""
         try:
@@ -246,22 +265,26 @@ class VectorStore:
             print(f"Error getting course link: {e}")
             return None
     
-    def get_lesson_link(self, course_title: str, lesson_number: int) -> Optional[str]:
-        """Get lesson link for a given course title and lesson number"""
+    def get_lesson_info(self, course_title: str, lesson_number: int) -> Optional[Dict[str, Any]]:
+        """Get lesson title and link for a given course title and lesson number"""
         import json
         try:
-            # Get course by ID (title is the ID)
             results = self.course_catalog.get(ids=[course_title])
             if results and 'metadatas' in results and results['metadatas']:
                 metadata = results['metadatas'][0]
                 lessons_json = metadata.get('lessons_json')
                 if lessons_json:
                     lessons = json.loads(lessons_json)
-                    # Find the lesson with matching number
                     for lesson in lessons:
                         if lesson.get('lesson_number') == lesson_number:
-                            return lesson.get('lesson_link')
+                            return lesson
             return None
         except Exception as e:
-            print(f"Error getting lesson link: {e}")
+            print(f"Error getting lesson info: {e}")
+            return None
+
+    def get_lesson_link(self, course_title: str, lesson_number: int) -> Optional[str]:
+        """Get lesson link for a given course title and lesson number"""
+        info = self.get_lesson_info(course_title, lesson_number)
+        return info.get('lesson_link') if info else None
     
